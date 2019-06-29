@@ -57,12 +57,16 @@ extern const string imuTopic = "/imu/data";
 extern const string fileDirectory = "/tmp/";
 
 // VLP-16
+// 16线，每线1800个点，16*1800=28800
+// 垂直方向：16线，±15°的垂直视场，対应2°的角分辨率
+// 竖直方向：1800个点，360°水平视场扫描，360/1800=0.2°  实际水平方向角度分辨率：0.1°到0.4°；
+// 测量频率：5到20Hz；
 extern const int N_SCAN = 16;           //16 lines
-extern const int Horizon_SCAN = 1800;
-extern const float ang_res_x = 0.2;
-extern const float ang_res_y = 2.0;
-extern const float ang_bottom = 15.0+0.1;
-extern const int groundScanInd = 7;
+extern const int Horizon_SCAN = 1800;   //360/1800=0.2°，这是视角全开的时候。(若只开300°，则300/ang_res_x=1500)
+extern const float ang_res_x = 0.2;     //水平方向每条线间距0.2°,这个采样间距是固定的。
+extern const float ang_res_y = 2.0;     //数值方向上每条线间距2°
+extern const float ang_bottom = 15.0+0.1; //
+extern const int groundScanInd = 7;     //???以多少个扫描圈表示地面
 
 // HDL-32E
 // extern const int N_SCAN = 32;
