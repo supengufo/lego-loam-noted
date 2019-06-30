@@ -431,35 +431,52 @@ public:
 
     void AccumulateIMUShiftAndRotation()
     {
+        //这六个值都是在body系下的。需要转换到world系下进行积分。
+        //角度值按照body系方向保留
         float roll = imuRoll[imuPointerLast];
         float pitch = imuPitch[imuPointerLast];
         float yaw = imuYaw[imuPointerLast];
+        //加速度按照world系保存。
         float accX = imuAccX[imuPointerLast];
         float accY = imuAccY[imuPointerLast];
         float accZ = imuAccZ[imuPointerLast];
         //a_B=[acc_z,acc_x,acc_y]
-        //R_x^T*a_B
+        //a_B = (R_x)*(R_y)*(R_z)*a_I
+        //a_I = (R_z^T)*(R_y^T)*(R_x^T)*a_B 这里是这个公式
+        //先绕x轴旋转R_x^T*a_B
+        //z=[1  0         0           [acc_z
+        //   0  cos(yaw)  -sin(yaw)    acc_x
+        //   0  sin(yaw) cos(yaw) ]*   acc_y]
+        //通过赋值顺序的改变，从world系的方向换成了body系的方向 acc=[acc_z acc_x acc_y]
+        //计算出来赋值的时候还是world系的方向
         float x1 = cos(roll)*accX - sin(roll)*accY;
         float y1 = sin(roll)*accX + cos(roll)*accY;
         float z1 = accZ;
         //R_y^T*R_x^T*a_B
+        //[cos(pitch) 0 -sin(pitch) *[z
+        // 0          1     0         x
+        // sin(pitch) 0 cos(pitch)    y]
+        //再次通过赋值，从world系的方向换到body系的方向
         float x2 = x1;
         float y2 = cos(pitch)*y1 - sin(pitch)*z1;
         float z2 = sin(pitch)*y1 + cos(pitch)*z1;
         //R_z^T*R_y^T*R_x^T*a_B
+        //最终结果是将acc换到world系下进行积分
         accX = cos(yaw)*x2 + sin(yaw)*z2;
         accY = y2;
         accZ = -sin(yaw)*x2 + cos(yaw)*z2;
-
+        //下标为199，也就是第200个元素
+        //last:当前时刻
+        //back：上一时刻
         int imuPointerBack = (imuPointerLast + imuQueLength - 1)%imuQueLength;
         double timeDiff = imuTime[imuPointerLast] - imuTime[imuPointerBack];
         if (timeDiff < scanPeriod)
         {
-            //位置
+            //位置积分：p_xLast = p_xBack + v_xBack*δt + a_xBack*δt*δt/2
             imuShiftX[imuPointerLast] = imuShiftX[imuPointerBack] + imuVeloX[imuPointerBack]*timeDiff + accX*timeDiff*timeDiff/2;
             imuShiftY[imuPointerLast] = imuShiftY[imuPointerBack] + imuVeloY[imuPointerBack]*timeDiff + accY*timeDiff*timeDiff/2;
             imuShiftZ[imuPointerLast] = imuShiftZ[imuPointerBack] + imuVeloZ[imuPointerBack]*timeDiff + accZ*timeDiff*timeDiff/2;
-            //速度
+            //速度积分：
             imuVeloX[imuPointerLast] = imuVeloX[imuPointerBack] + accX*timeDiff;
             imuVeloY[imuPointerLast] = imuVeloY[imuPointerBack] + accY*timeDiff;
             imuVeloZ[imuPointerLast] = imuVeloZ[imuPointerBack] + accZ*timeDiff;
@@ -470,7 +487,9 @@ public:
         }
     }
     /**
-     * @brief
+     * @brief IMU坐标系为x轴朝前，y轴朝左，z轴朝上。lego-loam里面使用的坐标系则是z轴朝前，x轴朝左，y轴朝上
+     *        所以后面 加速度去除重力的补偿的时候，x_B->z_I,y_B->x_I,x_B->y_I
+     *        B:body系，IMU所在的坐标系；I：Inertial系，即world系，惯性系；
      * @param imuIn
      */
     void imuHandler(const sensor_msgs::Imu::ConstPtr &imuIn)
@@ -488,12 +507,12 @@ public:
         float accY = imuIn->linear_acceleration.z - cos(roll)*cos(pitch)*9.81;
         float accZ = imuIn->linear_acceleration.x + sin(pitch)*9.81;
 
-        //imuQueLength = 200
-        //
+        //imuQueLength = 200，构建一个长度为200的循环队列
+        //imuPointerLast初始化为-1，第一次进此callback，下标为0
         imuPointerLast = (imuPointerLast + 1)%imuQueLength;
-
+        //保留imu last帧的时间戳
         imuTime[imuPointerLast] = imuIn->header.stamp.toSec();
-        //那这里为什么
+        //将角度，加速度和速度分别保存到対应的长度为200的循环队列中。
         imuRoll[imuPointerLast] = roll;
         imuPitch[imuPointerLast] = pitch;
         imuYaw[imuPointerLast] = yaw;
@@ -505,7 +524,7 @@ public:
         imuAngularVeloX[imuPointerLast] = imuIn->angular_velocity.x;
         imuAngularVeloY[imuPointerLast] = imuIn->angular_velocity.y;
         imuAngularVeloZ[imuPointerLast] = imuIn->angular_velocity.z;
-
+        //计算IMU的
         AccumulateIMUShiftAndRotation();
     }
 
@@ -550,18 +569,25 @@ public:
 
     void adjustDistortion()
     {
+        //扫描角度是否过半
         bool halfPassed = false;
         int cloudSize = segmentedCloud->points.size();
 
         PointType point;
-
+        //对分割的点云进行调整
         for (int i = 0; i < cloudSize; i++)
         {
-
+            //y->x
+            //z->y
+            //x->z
+            //原本是x轴朝前,z轴朝上.坐标轴交换，velodyne lidar的坐标系也转换到z轴向前，x轴向左的右手坐标系
             point.x = segmentedCloud->points[i].y;
             point.y = segmentedCloud->points[i].z;
             point.z = segmentedCloud->points[i].x;
-
+            //point.x/point.z=y/x=k
+            //atan2(*):返回以弧度表示的 y/x 的反正切,返回值为弧度，范围在(-pi,pi]
+            //取负号之后表示范围在ori=[-pi,pi)
+            //?????
             float ori = -atan2(point.x, point.z);
             if (!halfPassed)
             {
@@ -1996,10 +2022,15 @@ public:
             pubLaserCloudSurfLast.publish(laserCloudSurfLast2);
         }
     }
-
+    /**
+     * @brief 特征关联,程序主体
+     */
     void runFeatureAssociation()
     {
-
+        //topic:"/segmented_cloud"       status:newSegmentedCloud
+        //topic:"/segmented_cloud_info"  status:newSegmentedCloudInfo
+        //topic:"/outlier_cloud"         status:newOutlierCloud
+        //三个话题全部更新之后，并且相互之间时间间隔不超过0.05秒才会进行接下来处理
         if (newSegmentedCloud && newSegmentedCloudInfo && newOutlierCloud &&
             std::abs(timeNewSegmentedCloudInfo - timeNewSegmentedCloud) < 0.05 &&
             std::abs(timeNewOutlierCloud - timeNewSegmentedCloud) < 0.05)
@@ -2015,6 +2046,7 @@ public:
         /**
                 1. Feature Extraction
             */
+        //去畸变
         adjustDistortion();
 
         calculateSmoothness();
