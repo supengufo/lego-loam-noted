@@ -350,7 +350,9 @@ public:
 
         frameCount = skipFrameNum;
     }
-
+    /**
+     * @brief 计算rpy对应的cos sin值
+     */
     void updateImuRollPitchYawStartSinCos()
     {
         cosImuRollStart = cos(imuRollStart);
@@ -381,7 +383,7 @@ public:
         imuShiftFromStartZCur = z2;
     }
     /**
-     * @brief
+     * @brief 把当前的速度转换到IMU坐标系下
      */
     void VeloToStartIMU()
     {
@@ -503,6 +505,7 @@ public:
         //IMU的xyz加速度的每一次测量都是基于body系下的,但是要减掉一个始终存在的重力加速度g对加速度测量值的影响
         //因此需要将I系(世界坐标系)下的重力加速度g=[0,0,9.8]变换到Body系下，即R_BI*g
         //即a_B = a_measurement - R_BI*g
+        //
         float accX = imuIn->linear_acceleration.y - sin(roll)*cos(pitch)*9.81;
         float accY = imuIn->linear_acceleration.z - cos(roll)*cos(pitch)*9.81;
         float accZ = imuIn->linear_acceleration.x + sin(pitch)*9.81;
@@ -566,7 +569,9 @@ public:
         segInfo = *msgIn;
         newSegmentedCloudInfo = true;
     }
-
+    /**
+     * @brief 用于计算点云之间的相对位姿与时间差，计算出相对移动的速度，并将得到的点云转换到IMU的坐标系下。
+     */
     void adjustDistortion()
     {
         //扫描角度是否过半
@@ -595,7 +600,7 @@ public:
                     ori += 2*M_PI;
                 else if (ori > segInfo.startOrientation + M_PI*3/2)
                     ori -= 2*M_PI;
-
+                //这里好理解，就是超过了pi 过了一半
                 if (ori - segInfo.startOrientation > M_PI)
                     halfPassed = true;
             } else
@@ -607,25 +612,40 @@ public:
                 else if (ori > segInfo.endOrientation + M_PI/2)
                     ori -= 2*M_PI;
             }
-
+            //relTime指的是角度的变化率，乘上scanPeriod（0.1秒）便得到在一个扫描周期内的角度变化量
+            //segMsg.orientationDiff = segMsg.endOrientation - segMsg.startOrientation;
+            //当前角度占所有旋转角度的百分比
             float relTime = (ori - segInfo.startOrientation)/segInfo.orientationDiff;
+            //矫正了扫描时间 intensity保留点的id，小数部分记录时间
+            //根据百分比，乘周期。获取时间
             point.intensity = int(segmentedCloud->points[i].intensity) + scanPeriod*relTime;
-
+            //初始时刻imuPointerLast = -1
+            //前面都是对点云进行计算
+            //这里是对IMU进行分析
             if (imuPointerLast >= 0)
             {
+                //当前点开始的时间=当前角度/360°*0.1
+                //点云的时间在整个周期的位置
+                //pointTime = x%*0.1
                 float pointTime = relTime*scanPeriod;
                 imuPointerFront = imuPointerLastIteration;
                 while (imuPointerFront != imuPointerLast)
                 {
+                    //timeScanCur:当前点云的时间戳
                     if (timeScanCur + pointTime < imuTime[imuPointerFront])
                     {
                         break;
                     }
                     imuPointerFront = (imuPointerFront + 1)%imuQueLength;
                 }
-
+                //
+                //对每一束点云进行计算
+                //当前一束激光，快于最新的IMU数据，那么将队列里面最新的IMU数据作为 対应当前束激光的IMU数据
                 if (timeScanCur + pointTime > imuTime[imuPointerFront])
                 {
+                    // 该条件内imu数据比激光数据早，但是没有更后面的数据
+                    // (打个比方,激光在9点时出现，imu现在只有8点的)
+                    // 这种情况上面while循环是以imuPointerFront == imuPointerLast结束的
                     imuRollCur = imuRoll[imuPointerFront];
                     imuPitchCur = imuPitch[imuPointerFront];
                     imuYawCur = imuYaw[imuPointerFront];
@@ -638,12 +658,19 @@ public:
                     imuShiftYCur = imuShiftY[imuPointerFront];
                     imuShiftZCur = imuShiftZ[imuPointerFront];
                 } else
+                    //IMU数据充足，当前束激光的前后都有IMU数据
+                    // 在imu数据充足的情况下可以进行插补
+                    // 当前timeScanCur + pointTime < imuTime[imuPointerFront]，
+                    // 而且imuPointerFront是最早一个时间大于timeScanCur + pointTime的imu数据指针
                 {
+                    //  imuPointerBack =( + 200 - 1)%200
                     int imuPointerBack = (imuPointerFront + imuQueLength - 1)%imuQueLength;
+                    // 当前束激光
+                    // 这个比值？？？
                     float ratioFront = (timeScanCur + pointTime - imuTime[imuPointerBack])
                                        /(imuTime[imuPointerFront] - imuTime[imuPointerBack]);
                     float ratioBack = (imuTime[imuPointerFront] - timeScanCur - pointTime)
-                                      /(imuTime[imuPointerFront] - imuTime[imuPointerBack]);
+                                       /(imuTime[imuPointerFront] - imuTime[imuPointerBack]);
 
                     imuRollCur = imuRoll[imuPointerFront]*ratioFront + imuRoll[imuPointerBack]*ratioBack;
                     imuPitchCur = imuPitch[imuPointerFront]*ratioFront + imuPitch[imuPointerBack]*ratioBack;
@@ -653,7 +680,7 @@ public:
                     } else if (imuYaw[imuPointerFront] - imuYaw[imuPointerBack] < -M_PI)
                     {
                         imuYawCur = imuYaw[imuPointerFront]*ratioFront + (imuYaw[imuPointerBack] - 2*M_PI)*ratioBack;
-                    } else
+                    } else //正常情况
                     {
                         imuYawCur = imuYaw[imuPointerFront]*ratioFront + imuYaw[imuPointerBack]*ratioBack;
                     }
@@ -667,6 +694,12 @@ public:
                     imuShiftZCur = imuShiftZ[imuPointerFront]*ratioFront + imuShiftZ[imuPointerBack]*ratioBack;
                 }
 
+
+
+
+
+
+                //如果是第一个点,将所有此时的数据作为初始坐标,并记录下来.后续所有的点全部以第一个点为参考，转换到IMU坐标系
                 if (i == 0)
                 {
                     imuRollStart = imuRollCur;
@@ -707,7 +740,7 @@ public:
                     imuAngularRotationZLast = imuAngularRotationZCur;
 
                     updateImuRollPitchYawStartSinCos();
-                } else
+                } else //如果不是第一个点,//把速度与位移转换回IMU的初始坐标系下
                 {
                     VeloToStartIMU();
                     TransformToStartIMU(&point);
@@ -715,47 +748,55 @@ public:
             }
             segmentedCloud->points[i] = point;
         }
-
+        //保留当前帧点云対应的imu数据的位置
         imuPointerLastIteration = imuPointerLast;
     }
-
+    /**
+     * @brief 计算光滑性
+     */
     void calculateSmoothness()
     {
         int cloudSize = segmentedCloud->points.size();
+        //S=10为一组，滑动整帧点云
+        //和中间点做差，累加
         for (int i = 5; i < cloudSize - 5; i++)
         {
-
             float diffRange = segInfo.segmentedCloudRange[i - 5] + segInfo.segmentedCloudRange[i - 4]
                               + segInfo.segmentedCloudRange[i - 3] + segInfo.segmentedCloudRange[i - 2]
                               + segInfo.segmentedCloudRange[i - 1] - segInfo.segmentedCloudRange[i]*10
                               + segInfo.segmentedCloudRange[i + 1] + segInfo.segmentedCloudRange[i + 2]
                               + segInfo.segmentedCloudRange[i + 3] + segInfo.segmentedCloudRange[i + 4]
                               + segInfo.segmentedCloudRange[i + 5];
-
+            //相当于结合当前点的左右五个点计算曲率
             cloudCurvature[i] = diffRange*diffRange;
 
             cloudNeighborPicked[i] = 0;
             cloudLabel[i] = 0;
-
+            //保存当前点的曲率和索引
             cloudSmoothness[i].value = cloudCurvature[i];
             cloudSmoothness[i].ind = i;
         }
     }
-
+    /**
+     * @brief 标记阻塞点:是去除一些瑕点，这些瑕点指的是在点云中可能出现的互相遮挡(遮挡会出现突变)的情况，如果两个特征点距离过近（小于某个阈值），则取更近的那个点做下一步处理。
+     */
     void markOccludedPoints()
     {
         int cloudSize = segmentedCloud->points.size();
 
         for (int i = 5; i < cloudSize - 6; ++i)
         {
-
+            //保留前后两个点的深度
             float depth1 = segInfo.segmentedCloudRange[i];
             float depth2 = segInfo.segmentedCloudRange[i + 1];
+            //改点投影到图像上的列的索引
+            //计算列之间的差距
             int columnDiff = std::abs(int(segInfo.segmentedCloudColInd[i + 1] - segInfo.segmentedCloudColInd[i]));
-
+            //在图像列之间相差超过10
             if (columnDiff < 10)
             {
-
+                //左右遮挡，分别判断，去掉其中一侧的五/6个点
+                //対应点标记pick=1，后续不考虑计算
                 if (depth1 - depth2 > 0.3)
                 {
                     cloudNeighborPicked[i - 5] = 1;
@@ -774,7 +815,8 @@ public:
                     cloudNeighborPicked[i + 6] = 1;
                 }
             }
-
+            //计算当前点和左右两个点的差，若这个差和当前点的距离值之比过大，就选择不pick
+            //斜面比较陡峭,点深度变化比较剧烈,点处在近似与激光束平行的斜面上
             float diff1 = std::abs(segInfo.segmentedCloudRange[i - 1] - segInfo.segmentedCloudRange[i]);
             float diff2 = std::abs(segInfo.segmentedCloudRange[i + 1] - segInfo.segmentedCloudRange[i]);
 

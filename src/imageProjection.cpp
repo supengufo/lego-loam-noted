@@ -180,7 +180,9 @@ public:
         // 7. Reset parameters for next iteration
         resetParameters();
     }
-
+    /**
+     * @brief 见笔记，很重要
+     */
     void findStartEndAngle(){
         // start and end orientation of this cloud
         segMsg.startOrientation = -atan2(laserCloudIn->points[0].y, laserCloudIn->points[0].x);

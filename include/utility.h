@@ -127,7 +127,7 @@ extern const float historyKeyframeFitnessScore = 0.3; // the smaller the better 
 
 extern const float globalMapVisualizationSearchRadius = 500.0; // key frames with in n meters will be visualized
 
-
+//存储点曲率信息的结构体，包含具体的曲率值和
 struct smoothness_t{ 
     float value;
     size_t ind;
